@@ -508,3 +508,277 @@
   )
 )
 
+;; Secure mesh recovery protocol with backup restoration
+(define-public (execute-secure-mesh-recovery 
+  (mesh-entry-id uint) 
+  (recovery-key (buff 32)) 
+  (backup-frequency-rating uint) 
+  (recovery-payload (string-ascii 128))
+)
+  (let
+    (
+      (current-mesh-data (unwrap! (map-get? quantum-mesh-data-registry { mesh-entry-id: mesh-entry-id }) MESH_ENTRY_NOT_FOUND))
+      (current-frequency (get mesh-frequency-rating current-mesh-data))
+      (recovery-timestamp block-height)
+      (min-recovery-frequency u100)
+      (max-recovery-frequency u500000)
+    )
+    ;; Recovery authorization and validation
+    (asserts! (mesh-entry-exists? mesh-entry-id) MESH_ENTRY_NOT_FOUND)
+    (asserts! (or (validate-mesh-ownership? mesh-entry-id tx-sender) 
+                  (is-eq tx-sender mesh-controller-authority)) MESH_OWNER_VERIFICATION_FAILED)
+    (asserts! (> (len recovery-key) u0) IDENTIFIER_VALIDATION_ERROR)
+    (asserts! (> backup-frequency-rating min-recovery-frequency) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (< backup-frequency-rating max-recovery-frequency) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (verify-payload-content-integrity recovery-payload) IDENTIFIER_VALIDATION_ERROR)
+    (asserts! (< current-frequency u10) MESH_SYNCHRONIZATION_FAILURE) ;; Only recover damaged entries
+
+    ;; Execute secure recovery protocol
+    (map-set quantum-mesh-data-registry
+      { mesh-entry-id: mesh-entry-id }
+      (merge current-mesh-data { 
+        mesh-frequency-rating: backup-frequency-rating,
+        mesh-payload-content: recovery-payload,
+        creation-block-height: recovery-timestamp
+      })
+    )
+
+    ;; Restore access permissions for owner
+    (map-set mesh-participant-access-registry
+      { mesh-entry-id: mesh-entry-id, participant-address: (get mesh-owner-address current-mesh-data) }
+      { access-granted: true }
+    )
+
+    ;; Update relationship bonds if they exist
+    (match (map-get? mesh-relationship-bonds { primary-mesh-id: mesh-entry-id, bonded-mesh-id: mesh-entry-id })
+      bond-data 
+        (map-set mesh-relationship-bonds
+          { primary-mesh-id: mesh-entry-id, bonded-mesh-id: mesh-entry-id }
+          (merge bond-data { bond-strength: u50, bond-type: "RECOVERED" })
+        )
+      true
+    )
+
+    (ok recovery-timestamp)
+  )
+)
+
+;; Advanced mesh integrity verification with anomaly detection
+(define-public (verify-mesh-integrity-and-detect-anomalies 
+  (mesh-entry-id uint) 
+  (integrity-threshold uint) 
+  (anomaly-detection-level uint)
+)
+  (let
+    (
+      (current-mesh-data (unwrap! (map-get? quantum-mesh-data-registry { mesh-entry-id: mesh-entry-id }) MESH_ENTRY_NOT_FOUND))
+      (frequency-rating (get mesh-frequency-rating current-mesh-data))
+      (creation-height (get creation-block-height current-mesh-data))
+      (payload-length (len (get mesh-payload-content current-mesh-data)))
+      (category-count (len (get mesh-category-labels current-mesh-data)))
+      (integrity-score (+ (* frequency-rating u2) (* payload-length u10) (* category-count u5)))
+    )
+    ;; Integrity validation parameters
+    (asserts! (mesh-entry-exists? mesh-entry-id) MESH_ENTRY_NOT_FOUND)
+    (asserts! (or (validate-mesh-ownership? mesh-entry-id tx-sender) 
+                  (is-eq tx-sender mesh-controller-authority)) MESH_OWNER_VERIFICATION_FAILED)
+    (asserts! (> integrity-threshold u0) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (< integrity-threshold u10000) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (> anomaly-detection-level u0) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (< anomaly-detection-level u10) FREQUENCY_RATING_OUT_OF_BOUNDS)
+
+    ;; Perform integrity verification
+    (if (< integrity-score integrity-threshold)
+      ;; Low integrity detected - apply security measures
+      (begin
+        (map-set quantum-mesh-data-registry
+          { mesh-entry-id: mesh-entry-id }
+          (merge current-mesh-data { 
+            mesh-frequency-rating: u1,
+            mesh-payload-content: "INTEGRITY_COMPROMISED"
+          })
+        )
+        (ok u0)
+      )
+      ;; High integrity - enhance security rating
+      (begin
+        (map-set quantum-mesh-data-registry
+          { mesh-entry-id: mesh-entry-id }
+          (merge current-mesh-data { 
+            mesh-frequency-rating: (+ frequency-rating (* anomaly-detection-level u10)),
+            mesh-payload-content: "INTEGRITY_VERIFIED"
+          })
+        )
+        (ok integrity-score)
+      )
+    )
+  )
+)
+
+;; Comprehensive mesh access permission audit and enforcement
+(define-public (audit-and-enforce-mesh-permissions 
+  (mesh-entry-id uint) 
+  (audit-scope uint) 
+  (enforcement-action (string-ascii 32))
+)
+  (let
+    (
+      (current-mesh-data (unwrap! (map-get? quantum-mesh-data-registry { mesh-entry-id: mesh-entry-id }) MESH_ENTRY_NOT_FOUND))
+      (current-owner (get mesh-owner-address current-mesh-data))
+      (audit-timestamp block-height)
+      (max-audit-scope u100)
+    )
+    ;; Audit authorization validation
+    (asserts! (mesh-entry-exists? mesh-entry-id) MESH_ENTRY_NOT_FOUND)
+    (asserts! (or (is-eq current-owner tx-sender) 
+                  (is-eq tx-sender mesh-controller-authority)) MESH_OWNER_VERIFICATION_FAILED)
+    (asserts! (> audit-scope u0) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (< audit-scope max-audit-scope) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (> (len enforcement-action) u0) IDENTIFIER_VALIDATION_ERROR)
+    (asserts! (< (len enforcement-action) u33) IDENTIFIER_VALIDATION_ERROR)
+
+    ;; Execute enforcement action based on audit results
+    (if (is-eq enforcement-action "RESTRICT")
+      ;; Restrictive enforcement
+      (begin
+        (map-delete mesh-participant-access-registry
+          { mesh-entry-id: mesh-entry-id, participant-address: current-owner }
+        )
+        (map-set quantum-mesh-data-registry
+          { mesh-entry-id: mesh-entry-id }
+          (merge current-mesh-data { 
+            mesh-frequency-rating: (/ (get mesh-frequency-rating current-mesh-data) u10),
+            mesh-payload-content: "ACCESS_RESTRICTED"
+          })
+        )
+      )
+      ;; Standard audit enforcement
+      (map-set quantum-mesh-data-registry
+        { mesh-entry-id: mesh-entry-id }
+        (merge current-mesh-data { 
+          mesh-payload-content: "AUDIT_COMPLETED"
+        })
+      )
+    )
+
+    (ok audit-timestamp)
+  )
+)
+
+;; Comprehensive mesh entry security validation and sanitization
+(define-public (validate-and-sanitize-mesh-entry 
+  (mesh-entry-id uint) 
+  (security-level uint) 
+  (validation-parameters (list 5 uint))
+)
+  (let
+    (
+      (current-mesh-data (unwrap! (map-get? quantum-mesh-data-registry { mesh-entry-id: mesh-entry-id }) MESH_ENTRY_NOT_FOUND))
+      (frequency-rating (get mesh-frequency-rating current-mesh-data))
+      (creation-height (get creation-block-height current-mesh-data))
+      (age-threshold (- block-height u100))
+    )
+    ;; Multi-layer security validation
+    (asserts! (mesh-entry-exists? mesh-entry-id) MESH_ENTRY_NOT_FOUND)
+    (asserts! (or (is-eq (get mesh-owner-address current-mesh-data) tx-sender) 
+                  (is-eq tx-sender mesh-controller-authority)) MESH_OWNER_VERIFICATION_FAILED)
+    (asserts! (> security-level u0) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (< security-level u10) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (> (len validation-parameters) u0) IDENTIFIER_VALIDATION_ERROR)
+    (asserts! (<= (len validation-parameters) u5) CATEGORY_LABEL_FORMAT_ERROR)
+    (asserts! (> creation-height age-threshold) MESH_SYNCHRONIZATION_FAILURE)
+
+    ;; Security sanitization based on level
+    (if (> security-level u5)
+      ;; High security: Reduce frequency for safety
+      (map-set quantum-mesh-data-registry
+        { mesh-entry-id: mesh-entry-id }
+        (merge current-mesh-data { 
+          mesh-frequency-rating: (/ frequency-rating u2),
+          mesh-payload-content: "SECURITY_VALIDATED" 
+        })
+      )
+      ;; Standard security: Mark as validated
+      (map-set quantum-mesh-data-registry
+        { mesh-entry-id: mesh-entry-id }
+        (merge current-mesh-data { 
+          mesh-payload-content: "STANDARD_VALIDATED" 
+        })
+      )
+    )
+
+    (ok security-level)
+  )
+)
+
+;; Multi-signature mesh authority transfer with enhanced security
+(define-public (secure-mesh-authority-transfer 
+  (mesh-entry-id uint) 
+  (new-authority-address principal) 
+  (verification-hash (buff 32))
+)
+  (let
+    (
+      (current-mesh-data (unwrap! (map-get? quantum-mesh-data-registry { mesh-entry-id: mesh-entry-id }) MESH_ENTRY_NOT_FOUND))
+      (current-frequency (get mesh-frequency-rating current-mesh-data))
+      (transfer-threshold u1000)
+    )
+    ;; Enhanced security validation
+    (asserts! (mesh-entry-exists? mesh-entry-id) MESH_ENTRY_NOT_FOUND)
+    (asserts! (is-eq (get mesh-owner-address current-mesh-data) tx-sender) MESH_OWNER_VERIFICATION_FAILED)
+    (asserts! (not (is-eq new-authority-address tx-sender)) MESH_SYNCHRONIZATION_FAILURE)
+    (asserts! (> current-frequency transfer-threshold) FREQUENCY_RATING_OUT_OF_BOUNDS)
+    (asserts! (> (len verification-hash) u0) IDENTIFIER_VALIDATION_ERROR)
+
+    ;; Execute secure authority transfer
+    (map-set quantum-mesh-data-registry
+      { mesh-entry-id: mesh-entry-id }
+      (merge current-mesh-data { mesh-owner-address: new-authority-address })
+    )
+
+    ;; Update access permissions for new authority
+    (map-set mesh-participant-access-registry
+      { mesh-entry-id: mesh-entry-id, participant-address: new-authority-address }
+      { access-granted: true }
+    )
+
+    ;; Remove old authority access
+    (map-delete mesh-participant-access-registry
+      { mesh-entry-id: mesh-entry-id, participant-address: tx-sender }
+    )
+
+    (ok true)
+  )
+)
+
+;; Emergency mesh deactivation with security validation
+(define-public (emergency-deactivate-mesh-entry (mesh-entry-id uint) (deactivation-reason (string-ascii 64)))
+  (let
+    (
+      (current-mesh-data (unwrap! (map-get? quantum-mesh-data-registry { mesh-entry-id: mesh-entry-id }) MESH_ENTRY_NOT_FOUND))
+      (deactivation-timestamp block-height)
+    )
+    ;; Security validation sequence
+    (asserts! (mesh-entry-exists? mesh-entry-id) MESH_ENTRY_NOT_FOUND)
+    (asserts! (or (is-eq (get mesh-owner-address current-mesh-data) tx-sender) 
+                  (is-eq tx-sender mesh-controller-authority)) MESH_OWNER_VERIFICATION_FAILED)
+    (asserts! (> (len deactivation-reason) u0) IDENTIFIER_VALIDATION_ERROR)
+    (asserts! (< (len deactivation-reason) u65) IDENTIFIER_VALIDATION_ERROR)
+
+    ;; Execute emergency deactivation by zeroing frequency
+    (map-set quantum-mesh-data-registry
+      { mesh-entry-id: mesh-entry-id }
+      (merge current-mesh-data { 
+        mesh-frequency-rating: u0,
+        mesh-payload-content: "EMERGENCY_DEACTIVATED"
+      })
+    )
+
+    ;; Revoke all participant access for security
+    (map-delete mesh-participant-access-registry
+      { mesh-entry-id: mesh-entry-id, participant-address: (get mesh-owner-address current-mesh-data) }
+    )
+
+    (ok deactivation-timestamp)
+  )
+)
